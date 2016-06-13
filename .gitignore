@@ -5,9 +5,9 @@ node_modules
 *.json
 *.bak
 
-log/*
-log/*.log
+log
+#log/*.log
 #log/performance.log
-log/*.log_*
+#log/*.log_*
 test/log/*.log
 test/log/*.log_*
