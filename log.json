@@ -1,0 +1,32 @@
+{
+    "appenders":[
+        {
+            "type":"console",
+            "category":"console"
+        },
+        {
+            "type":"dateFile",
+            "filename":"./log/server.log",
+            "pattern": "_yyyy-MM-dd_hh",
+            "alwaysIncludePattern": false, 
+            "category":"server"
+        },
+        {
+            "type":"dateFile",
+            "filename":"./log/performance.log",
+            "pattern": "_yyyy-MM-dd_hh",
+            "alwaysIncludePattern": false, 
+            "category":"performance"
+        },
+        {
+            "type":"dateFile",
+            "filename":"./log/httpProtocols.log",
+            "pattern": "_yyyy-MM-dd",
+            "alwaysIncludePattern": false, 
+            "category":"httpprotocol"
+        }
+    ],
+    "levels":{
+        "test":"trace"
+    }
+}

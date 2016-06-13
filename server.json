@@ -1,0 +1,14 @@
+{
+    "listenPort" : 5002,
+    "historyNum" : 10,
+
+    "redisHost" : "192.168.41.50",
+    "redisPort" : 6379,
+
+    "hostName" : "http://www.qqsdimg.com",
+    "sessionTime" : 1800000,
+    "sessionCheckTime" : 300000,
+    "analysisPerformanceTime" : 300000,
+    "imgPath": "/home/service/nginx/html/imgs/",
+    "videoPath":"/home/service/nginx/html/videos/"
+}
