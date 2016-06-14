@@ -1,5 +1,5 @@
 
---drop table t_pushup_user;
+drop table t_pushup_user;
 create table `t_pushup_user`(
     userid int not null auto_increment,
     username varchar(20),
@@ -10,12 +10,12 @@ create table `t_pushup_user`(
     total int not null default 0 comment '总个数',
     value float default 0 comment '个人能力评估值,俯卧撑的平均时长',
     primary key (userid),
-    index key1 (value) comment '匹配对手',
-    index key2 (total) comment '排行榜'
+    index key1 (value),
+    index key2 (total)
 )
 COLLATE='utf8_unicode_ci';
 
---drop table t_pushup_record;
+drop table t_pushup_record;
 create table `t_pushup_record`(
     id int not null auto_increment,
     userid int not null,
@@ -28,14 +28,14 @@ create table `t_pushup_record`(
 COLLATE='utf8_unicode_ci';
 
 -- 挑战表
---drop table t_pushup_fight;
+drop table t_pushup_fight;
 create table `t_pushup_fight`(
     userid int not null,
     opponentid int not null,
     urecordid int not null,
     uscore int not null,
     orecordid int not null,
-    oscoreint not null,
+    oscore int not null,
     fighttime datetime not null,
     index key1 (userid),
     index key2 (opponentid)

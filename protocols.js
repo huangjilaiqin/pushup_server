@@ -65,7 +65,7 @@ function onRegister(data){
                     }else{
                         var userId = rows.insertId;
                         log.info('register userid:'+userId);
-                        emitter.emit('register', JSON.stringify({'userid':userId}));
+                        emitter.emit('register', JSON.stringify({'userid':userId,'username':username}));
                     }
                 });
             }
