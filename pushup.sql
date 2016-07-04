@@ -41,7 +41,7 @@ create table `t_pushup_fight`(
     index key2 (opponentid)
 )
 COLLATE='utf8_unicode_ci';
-alter table t_pushup_fight fighttime timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP; 
+alter table t_pushup_fight MODIFY fighttime timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 
 -- 物品表
 -- drop table t_pushup_goods;
