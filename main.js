@@ -59,6 +59,8 @@ function afterLoadInfo(err, results){
         
         socket.on('disconnect', function(){
             log.trace('onDisconnect:', socket.id);
+            console.log('onDisconnect:', socket.id);
+            socket.close();
         });
     });
 }

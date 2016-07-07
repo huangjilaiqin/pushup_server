@@ -380,9 +380,10 @@ function onSearchOpponent(data){
 }
 
 function canReduceHp(userid,hpsize,versionCode,callback){
+    console.log('canReduceHp',hpsize,versionCode);
     //低版本没有versionCode字段的
-    if(versionCode==undefined)
-        return true;
+    if(!versionCode)
+        callback(undefined,true);
     sql = 'select remainhp,hp from t_pushup_user where userid=?';
     db.query(sql, [userid], function(err,rows){
         console.log(rows);
