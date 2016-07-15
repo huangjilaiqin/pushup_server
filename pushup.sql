@@ -9,6 +9,12 @@ create table `t_pushup_user`(
     lost int not null default 0,
     total int not null default 0 comment '总个数',
     value float default 0 comment '个人能力评估值,俯卧撑的平均时长',
+    hp int not null default 8,
+    remainhp int not null default 8,
+    todaytask int not null default 100,
+    todayamount int not null default 0,
+    level int not null default 1,
+    star int not null default 0,
     primary key (userid),
     index key1 (value),
     index key2 (total)
