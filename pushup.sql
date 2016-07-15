@@ -88,4 +88,3 @@ create table `t_pushup_bonus_record`(
 )
 COLLATE='utf8_unicode_ci';
 
-
