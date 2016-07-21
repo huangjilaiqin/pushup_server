@@ -25,7 +25,7 @@ var resetServer=function(){
     var second = now.getSeconds();//second
     //console.log(hour,minute,second);
     if(hour===0 && minute===0 && second===0 && isReset===0){
-        query('update t_pushup_user set todayamount=0,remainhp=8',[],function(err, rows){
+        query('update t_pushup_user set todayamount=0,remainhp=5,maxwin=0',[],function(err, rows){
             if(err){
                 console.log('resetServer err',err);
             }else{

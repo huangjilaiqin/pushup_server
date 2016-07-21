@@ -1,13 +1,16 @@
 
 
 var db = require('./DBPool.js');
-var log = require('./log.js').log;
-var logPerformance = require('./log.js').logPerformance;
+var log = require('./log.js');
 var parseData = require('./util.js').parseData;
 var DateFormat = require('./util.js').DateFormat;
+var util = require('./util.js');
 var fs = require('fs');
 var md5 = require('md5');
+var async = require('async');
 
+var global = require('./global.js');
+var userSockets = global.userSockets;
 
 var protocols = {
     'register':onRegister,
@@ -23,6 +26,9 @@ var protocols = {
     'record':onRecord,
     'bonus':onBonus,
     'receiveBonus':onReceiveBonus,
+    'worldMessageHistory':onWorldMessageHistory,
+    'worldMessage':onWorldMessage,
+    'baseInfo':onBaseInfo,
 };
 
 var mailReg = /^\w+@\w+\.\w+$/;
@@ -41,7 +47,6 @@ function checkRegister(obj){
 }
 
 function onRegister(data){
-    console.log('register', data);
     var obj = checkRegister(data);
     var username = obj['username'];
     var passwd = obj['passwd'];
@@ -102,11 +107,11 @@ function onVerifyToken(obj){
 
     emitter.send('args is ok');
     if(obj['error']){
-        console.log('verifyToken',obj['error']);
+        log.info('verifyToken',obj['error']);
         emit.call(emitter,'verifyToken', obj);
     }else{
         if(verifyToken(userid,token)){
-            console.log('verifyToken success');
+            log.info('verifyToken success');
             //token有效
             sql = 'select * from t_pushup_user where userid=?';
             db.query(sql,[userid],function(err, rows){
@@ -114,15 +119,20 @@ function onVerifyToken(obj){
                     emit.call(emitter,'verifyToken', {'error':err});
                 }else{
                     var responseObj = rows[0];
+                    var userid = responseObj.userid;
                     delete responseObj.passwd;
-                    //console.log('verifyToken success:',responseObj);
+
+                    emitter.userid = userid;
+                    log.info('onVerifyToken', typeof(userid));
+                    userSockets[userid]=emitter;
+
                     emit.call(emitter,'verifyToken', responseObj);
                 }
             });
         }else{
             //需要登录
+            log.info('verifyToken expire');
             emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-            console.log('verifyToken expire');
         }
     }
 }
@@ -181,10 +191,16 @@ function onLogin(obj){
                     token = generateToken(userid);
                     //tokens存储在内存中
                     tokens[userid] = token;
-                    console.log('login success');
+                    log.info('login success');
                     responseObj['token']=token;
 
+                    emitter.userid = userid;
+                    log.info('onLogin', typeof(userid));
+                    userSockets[userid]=emitter;
+
                     emit.call(emitter,'login', responseObj);
+
+                    
                 }
             }        
         });
@@ -204,13 +220,13 @@ function checkSearchOpponent(obj){
 
 function queryUserValue(userid,callback){
     sql = 'select * from t_pushup_user where userid=?'
-    console.log('userid type:',userid,typeof(userid));
+    log.info('userid type:',userid,typeof(userid));
     db.query(sql, [userid], function(err, rows){
         if(err){
             callback({'errno':-1,'error':err.msg});
         }else{
-            console.log(rows);
-            console.log(rows.length);
+            log.info(rows);
+            log.info(rows.length);
             if(rows.length==1){
                 myvalue = rows[0]['value'];
                 if(myvalue==0)
@@ -241,33 +257,39 @@ function sendOpponentRecord(emitter,opponentId,opponentName,callback){
     db.query(recordSql, [opponentId], function(err, rows){
         if(err){
             emit.call(emitter,'searchOpponent', {'error':err});
-            console.log('not equal opponent error:',err);
+            log.info('not equal opponent error:',err);
         }else{
             size = rows.length;
             
             //随机一场
             index = Math.floor(Math.random()*size);
             
-            console.log('not equal opponent data size:',size,',index:',index);
+            log.info('not equal opponent data size:',size,',index:',index);
             recordData = rows[index];
+            records='';
+            try{
+                records=JSON.parse(recordData['record']);
+            }catch(e){
+                log.info('sendOpponentRecord error:',e, opponentId,index);
+                emit.call(emitter,'searchOpponent', {'error':e});
+                return;
+            }
             responseData = {
                 id:recordData['id'],
                 userid:opponentId,
                 username:opponentName,
-                records:JSON.parse(recordData['record']),
+                records:records,
                 sporttime:recordData['sporttime'],
             };
-            console.log('not equal opponent responseData,',responseData);
+            log.info('not equal opponent responseData,',responseData);
             emit.call(emitter,'searchOpponent', responseData);
-            reduceHp(userid,1);
+            //reduceHp(userid,1);
         }
     });
 }
 
 function onSearchOpponent(data){
-    log.debug('onSearchOpponent:', data);
     var emitter = this;
-    console.log('onSearchOpponent:', data);
     var obj = checkSearchOpponent(data);
     if(obj['error']){
         emit.call(emitter,'searchOpponent', obj);
@@ -279,7 +301,7 @@ function onSearchOpponent(data){
     if(verifyToken(userid,token)){
         //token有效
         canReduceHp(userid,1,versionCode,function(err,canReduce){
-            console.log('canReduce callback');
+            log.info('canReduce callback');
             if(err){
                 emit.call(emitter,'searchOpponent', {'error':err});
                 return; 
@@ -296,27 +318,27 @@ function onSearchOpponent(data){
                 }
                 maxValue = myvalue*1.2;
                 minValue = myvalue*0.8;
-                console.log('myvalue:',myvalue);
+                log.info('myvalue:',myvalue);
 
                 //查找实力相当的对手
                 getOpponentByValue(userid,minValue,maxValue,function(err,rows){
                     if(err){
                         emit.call(emitter,'searchOpponent', {'error':err});
-                        console.log(err);
+                        log.info(err);
                         return;    
                     }
-                    console.log('equal opponent',rows.length);
+                    log.info('equal opponent',rows.length);
                     //没有实力相当的选手,查找有实力(即有记录)的选手不需要实力相当
                     if(rows.length==0){
                         getOpponentByValue(userid,0,100,function(err,rows){
                             if(err){
                                 emit.call(emitter,'searchOpponent', {'error':err});
-                                console.log(err);
+                                log.info(err);
                                 return;    
                             }
                             //服务器是根本没有运动记录
                             if(rows.length==0){
-                                console.log('no equal opponent');
+                                log.info('no equal opponent');
                                 //伪造一个机器人
                                 records = [];
                                 times = 20+Math.floor(Math.random()*3);
@@ -324,7 +346,7 @@ function onSearchOpponent(data){
                                     var positive = Math.random()<0.5?1:-1;
                                     records.push(1*(1+0.2*positive));
                                 }
-                                console.log(records);
+                                log.info(records);
                                 responseData = {
                                     id:-1,
                                     username:'扫地生',
@@ -332,13 +354,13 @@ function onSearchOpponent(data){
                                     records:records,
                                     sporttime:new Date(),
                                 };
-                                console.log(responseData);
+                                log.info(responseData);
                                 emit.call(emitter,'searchOpponent', responseData);
                                 reduceHp(userid,1);
                             }else{
                                 opponentData = rows[0];
-                                console.log('opponent value:',opponentData['value']);
-                                console.log(opponentData);
+                                log.info('opponent value:',opponentData['value']);
+                                log.info(opponentData);
                                 var opponentId = opponentData['userid'];
                                 var opponentName = opponentData['username'];
                                 sendOpponentRecord(emitter,opponentId,opponentName);
@@ -357,20 +379,21 @@ function onSearchOpponent(data){
         });
     }else{
         //需要登录
+        log.info('verifyToken expire');
         emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
     }
 }
 
 function canReduceHp(userid,hpsize,versionCode,callback){
-    console.log('canReduceHp',hpsize,versionCode);
+    log.info('canReduceHp',hpsize,versionCode);
     //低版本没有versionCode字段的
     if(!versionCode)
         callback(undefined,true);
     sql = 'select remainhp,hp from t_pushup_user where userid=?';
     db.query(sql, [userid], function(err,rows){
-        console.log(rows);
+        log.info(rows);
         if(err){
-            console.log(err);
+            log.info(err);
             callback({errno:-1,error:err.msg});
         }else{
             if(rows.length==1){
@@ -391,30 +414,32 @@ function reduceHp(userid,hpsize){
     sql = 'update t_pushup_user set remainhp=remainhp-? where userid=?'
     db.query(sql, [hpsize,userid], function(err){
         if(err){
-            console.log('reduceHp error:', err);
+            log.info('reduceHp error:', err);
         }
     });
 }
 
-function handoutEveryDayBonus(emitter,userid,bonusid){
-    console.log('handoutEveryDayBonus');
-    sql = 'select * from t_pushup_bonus_record where userid=? and bonusid=? order by receivetime desc limit 1';
-    db.query(sql,[userid,bonusid],function(err, rows){
+function handoutEveryDayBonus(emitter,userid,username,bonusid){
+    log.info('handoutEveryDayBonus',userid);
+    sql = 'select * from t_pushup_bonus_record where userid=? and bonusid=? and receivetime>=?';
+    db.query(sql,[userid,bonusid,util.dayOfBegin(new Date())],function(err, rows){
         if(err){
-            console.log('handoutEveryDayBonus',err);
+            log.info('handoutEveryDayBonus',err);
         }else{
             if(rows.length==0){
                 handoutBonus(emitter,userid,bonusid);
-            }else{
-                var data = rows[0];
-                var receivetime = data['receivetime'];
-                console.log('receivetime');
-                console.log(receivetime);
                 var now = new Date();
-                console.log(now);
-                if(receivetime.getYear()!==now.getYear() || receivetime.getMonth()!==now.getMonth() || receivetime.getDate()!==now.getDate()){
-                    handoutBonus(emitter,userid,bonusid);
-                }
+                var worldMsg = {
+                    msg:"恭喜"+username+"完成了今日任务",
+                    userid:userid,
+                    type:3,
+                    isshow:1,
+                    showtimes:-1, 
+                    addtime:now, 
+                    stime:now, 
+                    etime:util.dayOfEnd(now), 
+                };
+                sendWorldMessage(worldMsg);
             }
         }
     });
@@ -424,13 +449,13 @@ function handoutBonus(emitter,userid,bonusid){
     sql = 'insert into t_pushup_bonus_record (userid,bonusid,receivetime) values (?,?,now())'; 
     db.query(sql,[userid,bonusid],function(err, rows){
         if(err){
-            console.log('handoutBonus', err); 
+            log.info('handoutBonus', err); 
         }else{
             var bonusRecordId = rows.insertId;
             sql = 'select r.id,b.id as bonusid,b.name as bonusname,b.reason,g.name as goodname,b.num from t_pushup_bonus_record as r inner join t_pushup_bonus as b on (r.bonusid=b.id) inner join t_pushup_goods as g on(b.goodid=g.id) where r.userid=? and r.status=0 and r.id=?' 
             db.query(sql,[userid,bonusRecordId],function(err, rows){
                 if(err){
-                    console.log('handoutBonus', err); 
+                    log.info('handoutBonus', err); 
                 }else{
                     var datas = {};
                     var size = rows.length;
@@ -450,7 +475,7 @@ function handoutBonus(emitter,userid,bonusid){
                             num:data.num,
                         });
                     }
-                    console.log('handoutBonus',JSON.stringify(datas));
+                    log.info('handoutBonus',JSON.stringify(datas));
                     emit.call(emitter,'bonus', datas);
                 }
             });
@@ -460,11 +485,11 @@ function handoutBonus(emitter,userid,bonusid){
 
 
 function getBonusContent(userid,bonusRecordId,callback){
-    console.log('getBonusContent',userid,bonusRecordId);
+    log.info('getBonusContent',userid,bonusRecordId);
     sql = 'select r.id,b.id as bonusid,b.name as bonusname,b.reason,g.name as goodname,b.num from t_pushup_bonus_record as r inner join t_pushup_bonus as b on (r.bonusid=b.id) inner join t_pushup_goods as g on(b.goodid=g.id) where r.userid=? and r.id=?' 
     db.query(sql,[userid,bonusRecordId],function(err, rows){
         if(err){
-            console.log(err);
+            log.info(err);
             if(callback!==undefined)
                 callback(err,undefined);
         }else{
@@ -483,7 +508,7 @@ function getBonusContent(userid,bonusRecordId,callback){
                     num:data.num,
                 });
             }
-            console.log(bonusData)
+            log.info(bonusData)
             if(callback!==undefined)
                 callback(undefined,bonusData);
         }
@@ -507,7 +532,6 @@ function checkUploadRecord(obj){
 
 function onUploadRecord(data){
     var emitter = this;
-    console.log('onUploadRecord:', data);
     var obj = checkUploadRecord(data);
     if(obj['error']){
         emit.call(emitter,'uploadRecord', obj);
@@ -525,12 +549,10 @@ function onUploadRecord(data){
         //token有效
         //*
         sql = 'insert into t_pushup_record (userid,record,costtime,sporttime)values(?,?,?,?)'
-        console.log('userid type:',userid,typeof(userid));
-        console.log([userid,JSON.stringify(records),20,new Date()]);
         db.query(sql, [userid,JSON.stringify(records),20,new Date()], function(err, rows){
             if(err){
                 emit.call(emitter,'uploadRecord', {'error':err});
-                console.log(err);
+                log.info(err);
                 return;
             }else{
                 var id = rows.insertId;
@@ -538,41 +560,47 @@ function onUploadRecord(data){
                 db.query(sql,[userid,opponentId,id,oRecordId,mRecordSize,oRecordSize],function(err, rows){
                     if(err){
                         emit.call(emitter,'uploadRecord', {'error':err});
-                        console.log(err);
+                        log.info(err);
                         return;
                     }else{
+                        log.info('uploadRecord insert');
                         //计算用户的平均值
-                        sql = 'select `value` from t_pushup_user where userid=?';
+                        sql = 'select `value`,maxwin,bestrecord from t_pushup_user where userid=?';
                         db.query(sql,[userid],function(err, rows){
                             if(err){
                                 emit.call(emitter,'uploadRecord', {'error':err});
                                 return;
                             }else{
                                 if(rows.length>0){
-                                    var oldValue = rows[0]['value'];
+                                    var row = rows[0];
+                                    var oldValue = row['value'];
+                                    var oldMaxwin = row['maxwin'];
+                                    var bestrecord = row['bestrecord'];
+
                                     var currentValue = 0;
                                     var recordSize = records.length;
                                     for(var i=0;i<recordSize;i++){
                                         currentValue+=records[i]; 
                                     }
-                                    console.log('times:',currentValue);
+                                    log.info('times:',currentValue);
                                     //单位: 个/秒
                                     currentValue=recordSize/currentValue;
-                                    console.log('speed:',currentValue);
+                                    log.info('speed:',currentValue);
                                     //耐力值: 总个数/标准个数
                                     endurance=recordSize/20;
-                                    console.log('endurance:',endurance);
+                                    log.info('endurance:',endurance);
                                     //能力值=速度*耐力值
                                     currentValue*=endurance
 
-                                    console.log('currentValue:',currentValue,'oldValue:',oldValue);
+                                    log.info('currentValue:',currentValue,'oldValue:',oldValue);
                                     if(oldValue!=0){
                                         currentValue = (oldValue+currentValue)/2;
                                     }
+                                    if(recordSize>bestrecord)
 
-                                    winSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,win=win+1 where userid=?';
-                                    drawSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,draw=draw+1 where userid=?';
-                                    lostSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,lost=lost+1 where userid=?';
+                                    winSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,win=win+1,maxwin=maxwin+1 where userid=?';
+                                    drawSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,draw=draw+1,maxwin=0 where userid=?';
+                                    lostSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,lost=lost+1,maxwin=0 where userid=?';
                                     //3:胜,2:平,1:负
                                     var pkResult=0;
                                     if(mRecordSize>oRecordSize){
@@ -589,41 +617,83 @@ function onUploadRecord(data){
                                     db.query(sql,[currentValue,mRecordSize,mRecordSize,userid],function(err, rows){
                                         if(err){
                                             emit.call(emitter,'uploadRecord', {'error':err});
-                                            console.log('uploadRecord',err);
+                                            log.info('uploadRecord',err);
                                             return;
                                         }else{
+                                            log.info('uploadRecord udpate user');
                                             sql = 'select * from t_pushup_user where userid=?';
                                             db.query(sql,[userid],function(err, rows){
                                                 if(err){
-                                                    console.log(err);
+                                                    log.info(err);
                                                     emit.call(emitter,'uploadRecord', {'error':err});
                                                 }else{
                                                     var responseData = rows[0];
                                                     delete responseData.passwd;
+                                                    var username = responseData.username;
+                                                    var userid = responseData.userid;
+                                                    var maxwin = responseData.maxwin;
+
+                                                    if(recordSize>bestrecord)
+                                                        updatePersonalNewRecord(userid,username,recordSize,bestrecord)
+
                                                     //判断是否发放每日任务奖励
-                                                    console.log('todayamount:',responseData['todayamount']);
-                                                    console.log('todaytask:',responseData['todaytask']);
+                                                    log.info('todayamount:',responseData['todayamount']);
+                                                    log.info('todaytask:',responseData['todaytask']);
                                                     if(responseData['todayamount']>=responseData['todaytask']){
-                                                        /*
-                                                        (function(emitter,userid){
-                                                            handoutEveryDayBonus(emitter,userid,1);
-                                                        })(emitter,userid);
-                                                        */
-                                                        console.log('handoutEveryDayBonus yes');
-                                                        handoutEveryDayBonus(emitter,userid,1);
-                                                        console.log('handoutEveryDayBonus yes after');
-                                                    }else{
-                                                        console.log('handoutEveryDayBonus no');
+                                                        handoutEveryDayBonus(emitter,userid,username,1);
                                                     }
-                                                    console.log('pkResult:',pkResult);
+                                                    log.info('pkResult:',pkResult);
                                                     
                                                     if(pkResult==3){
-                                                        (function(emitter,userid){
-                                                            handoutBonus(emitter,userid,2);
-                                                        })(emitter,userid);
+                                                        handoutBonus(emitter,userid,2);
                                                     }
-                                                    console.log('uploadRecord',responseData);
-                                                    emit.call(emitter,'uploadRecord', responseData);
+
+                                                    getUserInfo(db,opponentId,function(err,rows){
+                                                        if(err){
+                                                            log.info('getUserInfo',err);
+                                                            emit.call(emitter,'uploadRecord', {'error':err});
+                                                        }else{
+                                                            var opponentData = rows[0];
+                                                            var opponentName = opponentData['username'];
+                                                            var msg = '';
+                                                            var type = 0;
+                                                            if(pkResult==3){
+                                                                msg = getWinBroadcastMsg(maxwin,username,opponentName,mRecordSize,oRecordSize);
+                                                                type=4;
+                                                            }else if(maxwin>=3){
+                                                                msg = username+oldMaxwin+'连杀后,'+'被'+opponentName+oRecordSize+':'+mRecordSize+'终结'; 
+                                                                type=6
+                                                            }else{
+                                                                return;
+                                                            }
+                                                            var now = new Date();
+                                                            var worldMsg = {
+                                                                msg:msg,
+                                                                userid:userid,
+                                                                type:type,
+                                                                isshow:1,
+                                                                showtimes:-1,
+                                                                addtime:now,
+                                                                stime:now,
+                                                                etime:util.dayOfEnd(now),
+                                                            };
+                                                            sendWorldMessage(worldMsg);
+                                                        }
+                                                    });
+
+                                                    getEncourageMsg(db,mRecordSize,oRecordSize,function(err,rows){
+                                                        if(err){
+                                                            log.info('getEncourageMsg',err);
+                                                            emit.call(emitter,'uploadRecord', {'error':err});
+                                                        }else{
+                                                            var msg = '';
+                                                            if(rows.length>0)
+                                                                msg = rows[0].msg
+                                                            responseData.encourageMsg = msg;
+                                                            emit.call(emitter,'uploadRecord', responseData);
+                                                            log.info('uploadRecord handoutBonus');
+                                                        }
+                                                    });
                                                 }
                                             });
                                         }
@@ -637,6 +707,7 @@ function onUploadRecord(data){
         });
         //*/
     }else{
+        log.info('verifyToken expire');
         emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
     }
 }
@@ -645,11 +716,10 @@ function onUploadRecord(data){
 //获取没有领取的奖励id
 function onBonus(data){
     var emitter = this;
-    console.log('onBonus',data);
     var obj = checkBaseRequestInfo(data);
 
     if(obj['error']){
-        console.log('onBonus',obj['error']);
+        log.info('onBonus',obj['error']);
         emit.call(emitter,'onBonus', obj);
         return;
     }
@@ -660,7 +730,7 @@ function onBonus(data){
         sql = 'select r.id,b.id as bonusid,b.name as bonusname,b.reason,g.name as goodname,b.num from t_pushup_bonus_record as r inner join t_pushup_bonus as b on (r.bonusid=b.id) inner join t_pushup_goods as g on(b.goodid=g.id) where r.userid=? and r.status=0' 
         db.query(sql,[userid],function(err, rows){
             if(err){
-                console.log('onBonus error',err);  
+                log.info('onBonus error',err);  
             }else{
                 var datas = {};
                 var size = rows.length;
@@ -702,11 +772,10 @@ function checkReceiveBonus(obj){
 
 //领取奖励
 function onReceiveBonus(data){
-    console.log('receiveBonus',data);
     var emitter=this;
     var obj = checkReceiveBonus(data);
     if(obj['error']){
-        console.log('onReceiveBonus',obj['error']);
+        log.info('onReceiveBonus',obj['error']);
         emit.call(emitter,'receiveBonus', obj);
         return;
     }
@@ -715,28 +784,28 @@ function onReceiveBonus(data){
     var bonusRecordId = obj['bonusRecordId'];
 
     if(verifyToken(userid,token)){
-        console.log('verifyToken ok', bonusRecordId);
+        log.info('verifyToken ok', bonusRecordId);
         sql = 'update t_pushup_bonus_record set status=1,receivetime=now() where id=?'
         db.query(sql,[bonusRecordId],function(err, rows){
             if(err){
-                console.log(err);
+                log.info(err);
                 emit.call(emitter,'receiveBonus', {error:err});
             }else{
                 //todo 根据bonusid发放奖励物品
                 getBonusContent(userid,bonusRecordId,function(err,bonus){
-                    console.log('getBonusContent callback',bonus);
+                    log.info('getBonusContent callback',bonus);
                     if(err){
                         emit.call(emitter,'receiveBonus', {error:err});
                     }else{
                         var addHp = bonus.items[0].num;
-                        console.log('getBonusContent callback', addHp);
+                        log.info('getBonusContent callback', addHp);
                         sql = 'update t_pushup_user set remainhp=remainhp+? where userid=?'
                         db.query(sql,[addHp,userid],function(err, rows){
                             if(err){
-                                console.log(err);
+                                log.info(err);
                                 emit.call(emitter,'receiveBonus', {error:err});
                             }else{
-                                console.log('receiveBonus over');
+                                log.info('receiveBonus over');
                                 emit.call(emitter,'receiveBonus', {'bonusRecordId':bonusRecordId});
                             }
                         });
@@ -748,8 +817,8 @@ function onReceiveBonus(data){
         
 
     }else{
+        log.info('verifyToken expire');
         emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-        console.log('rank',err);
     }
     
 }
@@ -766,11 +835,10 @@ function checkBaseRequestInfo(obj){
 
 function onRank(data){
     var emitter = this;
-    console.log('onRank',data);
     var obj = checkBaseRequestInfo(data);
 
     if(obj['error']){
-        console.log('rank',obj['error']);
+        log.info('rank',obj['error']);
         emit.call(emitter,'rank', obj);
         return;
     }
@@ -779,19 +847,19 @@ function onRank(data){
 
     if(verifyToken(userid,token)){
         sql = 'select userid,username,total,win,draw,lost,value from t_pushup_user where total>0 order by total desc,win desc,lost,draw,userid';
-        console.log('verifyToken success');
+        log.info('verifyToken success');
         db.query(sql, [], function(err, rows){
             if(err){
                 emit.call(emitter,'rank', {'error':err});
-                console.log(err);
+                log.info(err);
             }else{
                 emit.call(emitter,'rank', {'rank':rows});
-                console.log('rank:',rows);
+                log.info('rank:',rows);
             }
         });
     }else{
+        log.info('verifyToken expire');
         emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-        console.log('rank',err);
     }
 }
 
@@ -807,11 +875,10 @@ function checkFightRecords(obj){
 
 function onFightRecords(data){
     var emitter = this;
-    console.log('fightRecords',data);
     var obj = checkFightRecords(data);
 
     if(obj['error']){
-        console.log('fightRecords',err);
+        log.info('fightRecords',err);
         emit.call(emitter,'fightRecords', obj);
         return;
     }
@@ -823,15 +890,15 @@ function onFightRecords(data){
         db.query(sql, [userid], function(err, rows){
             if(err){
                 emit.call(emitter,'fightRecords', {'error':err});
-                console.log(err);
+                log.info(err);
             }else{
+                log.info('fightRecords:'+rows.length);
                 emit.call(emitter,'fightRecords', {'datas':rows});
-                console.log('fightRecords:',rows);
             }
         });
     }else{
+        log.info('verifyToken expire');
         emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-        console.log('fightRecords',err);
     }
 }
 
@@ -847,11 +914,10 @@ function checkBeFightRecords(obj){
 
 function onBeFightRecords(data){
     var emitter = this;
-    console.log('beFightRecords',data);
     var obj = checkBaseRequestInfo(data);
 
     if(obj['error']){
-        console.log('beFightRecords',err);
+        log.info('beFightRecords',err);
         emit.call(emitter,'beFightRecords', obj);
         return;
     }
@@ -863,15 +929,15 @@ function onBeFightRecords(data){
         db.query(sql, [userid], function(err, rows){
             if(err){
                 emit.call(emitter,'beFightRecords', {'error':err});
-                console.log(err);
+                log.info(err);
             }else{
+                log.info('beFightRecords:'+rows.length);
                 emit.call(emitter,'beFightRecords', {'datas':rows});
-                console.log('beFightRecords:',rows);
             }
         });
     }else{
+        log.info('verifyToken expire');
         emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-        console.log('beFightRecords',err);
     }
 }
 
@@ -887,11 +953,10 @@ function checkRecords(obj){
 
 function onRecord(data){
     var emitter = this;
-    console.log('record',data);
     var obj = checkRecords(data);
 
     if(obj['error']){
-        console.log('record',err);
+        log.info('record',err);
         emit.call(emitter,'record', obj);
         return;
     }
@@ -902,11 +967,13 @@ function onRecord(data){
     db.query(sql, [userid,recordid], function(err, rows){
         if(err){
             emit.call(emitter,'record', {'error':err});
-            console.log(err);
+            log.info(err);
         }else{
             rows[0]['record']=JSON.parse(rows[0]['record']);
             emit.call(emitter,'record', rows[0]);
-            console.log('record:',rows);
+            log.info('record:',rows);
+
+            
         }
     });
     
@@ -917,9 +984,219 @@ function onLogout(data){
 }
 
 function onTestMessage(data){
-    log.debug('onTestMessage:', data);
-    console.log('onTestMessage:', data)
     this.emit('testMessage',JSON.stringify({name:'testMessage success'}));
+}
+
+function checkWorldMessge(){
+
+}
+function onWorldMessageHistory(data){
+    var emitter = this;
+    checkWorldMessge(data);
+
+    if(data['error']){
+        log.info('rank',data['error']);
+        emit.call(emitter,'worldMessageHistory', data);
+        return;
+    }
+    var userid = data['userid'];
+    var token = data['token'];
+
+    if(verifyToken(userid,token)){
+        log.info('verifyToken success');
+        async.parallel(
+            [
+                //公告
+                function(cb){
+                    sql = 'select * from t_pushup_world_broadcast where etime>now() and type in (1,2) order by addtime desc';
+                    db.query(sql, [], function(err, rows){
+                        cb(err,rows);
+                    });
+                
+                },
+                //用户广播
+                function(cb){
+                    sql = 'select * from (select * from t_pushup_world_broadcast where etime>now() and type not in (1,2) order by addtime desc) as a group by userid,type';
+                    db.query(sql, [], function(err, rows){
+                        cb(err,rows);
+                    });
+                
+                },
+            ],
+            function(err, results){
+                if(err){
+                    emit.call(emitter,'worldMessageHistory', {'error':err});
+                    log.info(err);
+                }else{
+                    var rows = results[0].concat(results[1]);
+                    //log.info(err,rows);
+                    //log.info('worldMessageHistory',typeof(rows[0].etime),rows[0].etime);
+                    emit.call(emitter,'worldMessageHistory', {msgs:rows});
+                }
+            } 
+        );
+    }else{
+        log.info('verifyToken expire');
+        emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+    }
+}
+
+function onWorldMessage(data){
+
+}
+
+function sendWorldMessage(msg){
+    log.info('sendWorldMessage',msg.userid,msg.msg);
+    //入库
+    insertTable(db,'t_pushup_world_broadcast',msg);
+
+    for(var userid in userSockets){
+        var emiter = userSockets[userid];
+        emit.call(emiter,'worldMessage', {msg:msg});
+    }
+}
+
+function insertTable(dbInstance,tableName,datas,cb){
+    var sql = 'insert into '+tableName+'(';
+    var keys = [];
+    var wenhaos = [];
+    var values = [];
+    for(var key in datas){
+        keys.push(key);  
+        wenhaos.push('?');
+        values.push(datas[key]);
+    }
+    sql+=keys.join(',')+')values('+wenhaos.join(',')+')';
+    
+    dbInstance.query(sql,values,cb); 
+}
+
+function getUserInfo(dbInstance,userid,cb){
+    var sql = 'select username from t_pushup_user where userid=?';
+    dbInstance.query(sql,[userid],cb); 
+}
+
+function getWinBroadcastMsg(maxwin,username,opponentName,uscore,oscore){
+    var msg=username+' '+uscore+':'+oscore+'干掉了'+opponentName+',';
+    switch(maxwin){
+        case 1:
+            msg+='拿下了第一滴血';
+            break;
+        case 2:
+            msg+="完成了双杀";
+            break;
+        case 3:
+            msg+="完成了三杀";
+            break;
+        case 4:
+            msg+="完成了四杀";
+            break;
+        case 5:
+            msg+="完成了五杀";
+            break;
+        case 6:
+            msg+="大杀特杀";
+            break;
+        case 7:
+            msg+="已经暴走";
+            break;
+        case 8:
+            msg+="无人能挡";
+            break;
+        case 9:
+            msg+="主宰了比赛";
+            break;
+        case 10:
+            msg+="接近超神";
+            break;
+        case 11:
+            msg+="已经超神";
+            break;
+        case 12:
+            msg+="成为了终结者";
+            break;
+        default:
+            msg+="成为了终结者";
+            break;
+    }
+    return msg;
+}
+
+function getEncourageMsg(dbInstance,myScore,opponentScore,cb){
+    var delta = myScore-opponentScore; 
+    var type=0;
+    if(delta>=10)
+        //完胜
+        type=2
+    else if(delta>0){
+        //胜
+        type=1;
+    }else if(delta===0){
+        //平
+        type=0;
+    }else if(delta>=-10){
+        //败
+        type=-1;
+    }else if(delta<-10){
+        //惨败
+        type=-2;
+    }
+    var sql = 'select msg from t_pushup_encourage where type=? order by rand() limit 1';
+    dbInstance.query(sql,[type],cb);
+}
+
+function updatePersonalNewRecord(userid,username,bestrecord,oldRecord){
+    sql = 'update t_pushup_user set bestrecord=? where userid=?';
+    db.query(sql,[bestrecord,userid],function(err,rows){
+        if(err){
+            log.error('updatePersonalNewRecord',err); 
+        }else{
+            if(oldRecord>0)
+                broadcastNewRecord(userid,username,bestrecord,oldRecord);  
+        }
+    });
+}
+
+function broadcastNewRecord(userid,username,bestrecord,oldRecord){
+    var now = new Date();
+    var msg = username+'再次突破自己30秒最好记录:'+bestrecord+'个,原记录:'+oldRecord;
+    var worldMsg = {
+        msg:msg,
+        userid:userid,
+        type:5,
+        isshow:1,
+        showtimes:-1,
+        addtime:now,
+        stime:now,
+        etime:util.timedelta(now,{days:2}),
+    };
+    sendWorldMessage(worldMsg);
+}
+
+function onBaseInfo(data){
+    var emitter = this;
+    var userid = data.userid;
+    var token = data.token;
+    var os = data.os;
+    var isBrowser=data.isBrowser;
+    var isMobile=data.isMobile;
+    var isNative=data.isNative;
+    var platform=data.platform;
+    var browserType=data.browserType;
+    var browserVersion=data.browserVersion;
+    var comefrom=data.comefrom;
+    if(data['error']){
+        emit.call(emitter,'baseInfo', data);
+    }else{
+        var values=[os,comefrom,isNative,browserType,userid];
+        db.query('update t_pushup_user set os=?,comefrom=?,isNative=?,browserType=? where userid=?',values, function(err, rows){
+            if(err){
+                emit.call(emitter,'baseInfo', {'error':err});
+            }else{
+                log.info('baseInfo',values);
+            }
+        });
+    }
 }
 
 module.exports = protocols;
