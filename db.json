@@ -1,9 +1,9 @@
 
 {
-    "host" : "127.0.0.1",
+    "host" : "10.10.108.165",
     "port" : 3306,
-    "user" : "root",
-    "password" : "gandafu19910804",
-    "database" : "pushup"
+    "user" : "qqsdball_web",
+    "password" : "F3MdzQVH5mZ6dC5t",
+    "database" : "test"
 }
 

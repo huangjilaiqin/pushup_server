@@ -1,7 +1,7 @@
 
 var mysql = require('mysql');
 var dbConfig = require('./db.json');
-var log = require('./log.js').log;
+var log = require('./log.js');
 
 var DBPool = function(config){
     if(!config){
@@ -21,7 +21,8 @@ DBPool.prototype.query = function(sql, args, cb){
 
         connection.query(sql, args, function(err, rows) {
             connection.release();
-            cb(err, rows);
+            if(cb)
+                cb(err, rows);
         });
     });   
 }
