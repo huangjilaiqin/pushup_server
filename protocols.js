@@ -204,13 +204,10 @@ function checkSearchOpponent(obj){
 
 function queryUserValue(userid,callback){
     sql = 'select * from t_pushup_user where userid=?'
-    console.log('userid type:',userid,typeof(userid));
     db.query(sql, [userid], function(err, rows){
         if(err){
             callback({'errno':-1,'error':err.msg});
         }else{
-            console.log(rows);
-            console.log(rows.length);
             if(rows.length==1){
                 myvalue = rows[0]['value'];
                 if(myvalue==0)
