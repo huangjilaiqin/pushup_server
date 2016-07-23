@@ -177,13 +177,16 @@ function onLogin(obj){
     var passwd = obj['passwd'];
     if(obj['error']){
         emit.call(emitter,'login', obj);
+        log.info('login error',obj);
     }else{
         db.query('select * from t_pushup_user where username=? and passwd=?', [username, passwd], function(err, rows){
             if(err){
                 emit.call(emitter,'login', {'error':err});
+                log.info('login error',err);
             }else{
                 if(rows.length == 0){
                     emit.call(emitter,'login', {'error':'用户名不存在或密码错误'});
+                    log.info('login error username or passwd');
                 }else{
                     var responseObj = rows[0];
                     delete responseObj.passwd;
@@ -199,6 +202,7 @@ function onLogin(obj){
                     userSockets[userid]=emitter;
 
                     emit.call(emitter,'login', responseObj);
+                    log.info('login ok');
 
                     
                 }
