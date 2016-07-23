@@ -50,6 +50,9 @@ function onRegister(data){
     var obj = checkRegister(data);
     var username = obj['username'];
     var passwd = obj['passwd'];
+    var registerFrom=0;
+    if(obj['registerFrom'])
+        registerFrom=obj['registerFrom'];
     log.trace('register', obj);
     var emitter = this;
     if(obj['error']){
@@ -64,7 +67,7 @@ function onRegister(data){
                 emit.call(emitter,'register', {'error':'用户名已存在'});
             }else{
                 log.trace('register mail insert');
-                db.query('insert into t_pushup_user(username, passwd) values (?,?)', [username,passwd], function(err, rows){
+                db.query('insert into t_pushup_user(username, passwd,registerFrom) values (?,?,?)', [username,passwd,registerFrom], function(err, rows){
                     if(err){
                         emit.call(emitter,'register', {'error':err});
                     }else{
@@ -598,9 +601,9 @@ function onUploadRecord(data){
                                     }
                                     if(recordSize>bestrecord)
 
-                                    winSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,win=win+1,maxwin=maxwin+1 where userid=?';
-                                    drawSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,draw=draw+1,maxwin=0 where userid=?';
-                                    lostSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,lost=lost+1,maxwin=0 where userid=?';
+                                    winSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,win=win+1,maxwin=maxwin+1,lastfighttime=now() where userid=?';
+                                    drawSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,draw=draw+1,maxwin=0,lastfighttime=now() where userid=?';
+                                    lostSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,lost=lost+1,maxwin=0,lastfighttime=now() where userid=?';
                                     //3:胜,2:平,1:负
                                     var pkResult=0;
                                     if(mRecordSize>oRecordSize){
@@ -1185,11 +1188,14 @@ function onBaseInfo(data){
     var browserType=data.browserType;
     var browserVersion=data.browserVersion;
     var comefrom=data.comefrom;
+    var versionCode=0;
+    if(data.versionCode)
+        versionCode=data.versionCode;
     if(data['error']){
         emit.call(emitter,'baseInfo', data);
     }else{
-        var values=[os,comefrom,isNative,browserType,userid];
-        db.query('update t_pushup_user set os=?,comefrom=?,isNative=?,browserType=? where userid=?',values, function(err, rows){
+        var values=[os,comefrom,isNative,browserType,versionCode,userid];
+        db.query('update t_pushup_user set os=?,comefrom=?,isNative=?,browserType=?,versionCode=? where userid=?',values, function(err, rows){
             if(err){
                 emit.call(emitter,'baseInfo', {'error':err});
             }else{
