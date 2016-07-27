@@ -24,6 +24,7 @@ create table `t_pushup_user`(
     browserType varchar(50) default '',
     versionCode int default 0,
     registerFrom int default 0,
+    registerTime timestamp NULL,
     primary key (userid),
     index key1 (value),
     index key2 (total)
@@ -38,6 +39,8 @@ alter table t_pushup_user add column isNative tinyint default 0;
 alter table t_pushup_user add column browserType varchar(50) default '';
 alter table t_pushup_user add column versionCode int default 0;
 alter table t_pushup_user add column registerFrom int default 0;
+alter table t_pushup_user add column registerTime timestamp null;
+
 
 -- drop table t_pushup_record;
 create table `t_pushup_record`(

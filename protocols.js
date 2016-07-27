@@ -13,6 +13,7 @@ var global = require('./global.js');
 var userSockets = global.userSockets;
 
 var protocols = {
+    'beat':onBeat,
     'register':onRegister,
     'login':onLogin,
     'logout':onLogout,
@@ -67,7 +68,7 @@ function onRegister(data){
                 emit.call(emitter,'register', {'error':'用户名已存在'});
             }else{
                 log.trace('register mail insert');
-                db.query('insert into t_pushup_user(username, passwd,registerFrom) values (?,?,?)', [username,passwd,registerFrom], function(err, rows){
+                db.query('insert into t_pushup_user(username, passwd,registerFrom,registerTime) values (?,?,?,now())', [username,passwd,registerFrom], function(err, rows){
                     if(err){
                         emit.call(emitter,'register', {'error':err});
                     }else{
@@ -80,6 +81,11 @@ function onRegister(data){
         });
                 
     }
+}
+
+function onBeat(){
+    var emitter = this;
+    emit.call(emitter,'beat', {'msg':'ok'});
 }
 
 
