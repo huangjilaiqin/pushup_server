@@ -45,7 +45,7 @@ function afterLoadInfo(err, results){
         log.info('onConnect sec-websocket-key:',ws.upgradeReq.headers['sec-websocket-key']);
 
         ws.on('message', function(message) {
-            log.info('received:', message);
+            //log.info('received:', message);
             //*
             try{
                 var msg = JSON.parse(message);

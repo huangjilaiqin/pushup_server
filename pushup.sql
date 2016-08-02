@@ -2,6 +2,9 @@
 -- drop table t_pushup_user;
 create table `t_pushup_user`(
     userid int not null auto_increment,
+    openid varchar(100) not null default '',
+    token varchar(32) not null default '',
+    logintype tinyint not null default 0 comment '0:用户名密码,1:qq, 2:微信',
     username varchar(20),
     passwd varchar(50),
     win int not null default 0,
@@ -9,6 +12,7 @@ create table `t_pushup_user`(
     lost int not null default 0,
     total int not null default 0 comment '总个数',
     value float default 0 comment '个人能力评估值,俯卧撑的平均时长',
+    avgValue float default 0 comment '每次俯卧撑平均值',
     hp int not null default 8,
     remainhp int not null default 8,
     todaytask int not null default 100,
@@ -28,6 +32,7 @@ create table `t_pushup_user`(
     primary key (userid),
     index key1 (value),
     index key2 (total)
+    index avg_value_index (avgValue),
 )
 COLLATE='utf8_unicode_ci';
 
@@ -40,12 +45,20 @@ alter table t_pushup_user add column browserType varchar(50) default '';
 alter table t_pushup_user add column versionCode int default 0;
 alter table t_pushup_user add column registerFrom int default 0;
 alter table t_pushup_user add column registerTime timestamp null;
+alter table t_pushup_user add column openid varchar(100) not null default '';
+alter table t_pushup_user add column token char(32) not null default '';
+alter table t_pushup_user add column logintype tinyint not null default 0;
+alter table t_pushup_user add column avgValue float default 0;
+ALTER TABLE t_pushup_user ADD INDEX avg_value_index (`avgValue`);
+
+-- update t_pushup_user as u set avgValue=(select avg(uscore) as avgValue from t_pushup_fight where userid=u.userid);
 
 
 -- drop table t_pushup_record;
 create table `t_pushup_record`(
     id int not null auto_increment,
     userid int not null,
+    size int not null default 0,
     record varchar(500),
     costtime int comment '本次运动的限制时长(秒)',
     sporttime datetime not null,
@@ -53,6 +66,11 @@ create table `t_pushup_record`(
     index key1 (userid,sporttime)
 )
 COLLATE='utf8_unicode_ci';
+alter table t_pushup_record add column size int default 0;
+ALTER TABLE t_pushup_record ADD INDEX size_index (`size`);
+-- update t_pushup_record as r set size=(select uscore from t_pushup_fight where urecordid=r.id);
+-- 注意检查数据的正确性
+-- select * from t_pushup_fight where uscore=0;
 
 -- 挑战表
 -- drop table t_pushup_fight;
