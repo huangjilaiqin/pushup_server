@@ -35,7 +35,7 @@ var isStatistics=0;
 var isReset=0;
 
 function ticktack(){
-    doOnceOneDay(new Date('2016-08-01 19:00:00'),isStatistics,statisticsData);
+    doOnceOneDay(new Date('2016-08-01 23:55:00'),isStatistics,statisticsData);
     doOnceOneDay(new Date('2016-08-01 23:59:59'),isReset,resetServer);
 }
 
