@@ -8,14 +8,18 @@ var util = require('./util.js');
 var fs = require('fs');
 var md5 = require('md5');
 var async = require('async');
+var request = require('request');
 
 var global = require('./global.js');
 var userSockets = global.userSockets;
 
+//qq登陆的appid
+var appid='1105464601';
 var protocols = {
     'beat':onBeat,
     'register':onRegister,
     'login':onLogin,
+    'bindQQ':onBindQQ,
     'logout':onLogout,
     'verifyToken':onVerifyToken,
     'testMessage':onTestMessage,
@@ -100,7 +104,11 @@ function checkLogin(obj){
 
 var emit=function(eventName,obj){
     obj.eventName=eventName;
+    if(eventName==='login'){
+        log.info('send login',JSON.stringify(obj));
+    }
     this.send(JSON.stringify(obj));
+    
 };
 
 var USER_STATUS_ONLINE = 1;
@@ -114,13 +122,14 @@ function onVerifyToken(obj){
     var token = obj['token'];
     var emitter = this;
 
-    emitter.send('args is ok');
     if(obj['error']){
-        log.info('verifyToken',obj['error']);
         emit.call(emitter,'verifyToken', obj);
     }else{
-        if(verifyToken(userid,token)){
-            log.info('verifyToken success');
+        verifyToken(userid,token,function(isOk){
+            if(isOk===0){
+                emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+                return;
+            }
             //token有效
             sql = 'select * from t_pushup_user where userid=?';
             db.query(sql,[userid],function(err, rows){
@@ -138,22 +147,35 @@ function onVerifyToken(obj){
                     emit.call(emitter,'verifyToken', responseObj);
                 }
             });
-        }else{
-            //需要登录
-            log.info('verifyToken expire');
-            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-        }
+        });
     }
 }
 
-function verifyToken(userid,token){
-    oldToken=getToken(userid);
-    if(token==oldToken){
-        //token有效
-        return 1;
+function verifyToken(userid,token,cb){
+    var oldToken = tokens[userid];
+    if(oldToken===token){
+        cb(1);
     }else{
-        //需要登录
-        return 0;
+        if(oldToken!==undefined)
+            delete tokens[userid];
+        sql = 'select * from t_pushup_user where userid=?'
+        db.query(sql, [userid],function(err,rows){
+            if(err){
+                cb(0);
+            }else{
+                if(rows.length===0){
+                    cb(0);
+                    return;
+                }
+                var dbToken = rows[0]['token'];
+                if(token===dbToken){
+                    tokens[userid]=dbToken;
+                    cb(1);
+                }else{
+                    cb(0);
+                }
+            }
+        });
     }
 }
 
@@ -179,43 +201,177 @@ function loadInitData(userid){
     return {};
 }
 
+/*
+logintype
+    'qq':1,
+    'weixin':2,
+    'weibo':3,
+*/
+
+
 function onLogin(obj){
     var emitter = this;
-    var obj = checkLogin(obj);
     var username = obj['username'];
     var passwd = obj['passwd'];
-    if(obj['error']){
-        emit.call(emitter,'login', obj);
-        log.info('login error',obj);
+    var logintype = obj['logintype'];
+    var openid = obj['openid'];
+    var accessToken = obj['accessToken'];
+    var registerFrom=obj['registerFrom'];
+
+    if(logintype===undefined){
+        checkLogin(obj);
+        if(obj['error']){
+            emit.call(emitter,'login', obj);
+        }else{
+            db.query('select * from t_pushup_user where username=? and passwd=?', [username, passwd], function(err, rows){
+                if(err){
+                    emit.call(emitter,'login', {'error':err});
+                }else{
+                    if(rows.length == 0){
+                        emit.call(emitter,'login', {'error':'用户名不存在或密码错误'});
+                    }else{
+                        var responseObj = rows[0];
+                        delete responseObj.passwd;
+                        var userid = responseObj.userid;
+                        token = generateToken(userid);
+                        db.query('update t_pushup_user set token=? where userid=?',[token,userid],function(err,rows){
+                            
+                        });
+                        //tokens存储在内存中
+                        tokens[userid] = token;
+                        responseObj['token']=token;
+
+                        emitter.userid = userid;
+                        userSockets[userid]=emitter;
+
+                        emit.call(emitter,'login', responseObj);
+                    }
+                }        
+            });
+        }
     }else{
-        db.query('select * from t_pushup_user where username=? and passwd=?', [username, passwd], function(err, rows){
-            if(err){
-                emit.call(emitter,'login', {'error':err});
-                log.info('login error',err);
-            }else{
+        if(logintype===1){
+            var sql = 'select * from t_pushup_user where openid=? and logintype=?';
+            db.query(sql, [openid,logintype], function(err, rows){
+                if(err){
+                    log.info(sql,openid);
+                    emit.call(emitter,'login', {'error':err});
+                    return;
+                }
                 if(rows.length == 0){
-                    emit.call(emitter,'login', {'error':'用户名不存在或密码错误'});
-                    log.info('login error username or passwd');
+                    //获取qq用户信息
+                    getUserInfoFromQQ(openid,accessToken,function(err,obj){
+                        log.info('getUserInfoFromQQ');
+                        if(err){
+                            emit.call(emitter,'login',err);
+                            return; 
+                        }
+                        var username = obj['nickname'];
+                        addUser(username,openid,logintype,registerFrom,function(err,obj){
+                            if(err){
+                                emit.call(emitter,'login', {'error':err});
+                                return;
+                            }
+                            var userid = obj.userid;
+                            var token = generateToken(userid);
+                            updateToken(userid,token);
+                            getUserInfo(db,userid,function(err,rows){
+                                if(err){
+                                    emit.call(emitter,'login', {error:err});
+                                    log.info('login getUserInfo error:',err);
+                                    return;
+                                }
+                                if(rows.length===0){
+                                    emit.call(emitter,'login', {error:'user not exist'});
+                                    log.info('login getUserInfo error:user not exist');
+                                    return;
+                                }
+                                var info = rows[0];
+                                delete info.passwd;    
+                                info.token = token;
+                                emitter.userid = userid;
+                                userSockets[userid]=emitter;
+                                emit.call(emitter,'login', info);
+                            });
+                        });
+                    });
                 }else{
                     var responseObj = rows[0];
                     delete responseObj.passwd;
                     var userid = responseObj.userid;
                     token = generateToken(userid);
+                    
                     //tokens存储在内存中
                     tokens[userid] = token;
-                    log.info('login success');
                     responseObj['token']=token;
-
+                    updateToken(userid,token);
                     emitter.userid = userid;
-                    log.info('onLogin', typeof(userid));
                     userSockets[userid]=emitter;
-
                     emit.call(emitter,'login', responseObj);
-                    log.info('login ok');
-
-                    
                 }
-            }        
+            });
+        
+        }else if(logintype===2){
+        
+        }else if(logintype===3){
+        
+        } 
+    }
+}
+
+function getUserInfoFromQQ(openid,accessToken,cb){
+    url = 'https://graph.qq.com/user/get_user_info?oauth_consumer_key='+appid+'&access_token='+accessToken+'&openid='+openid+'&format=json';
+    request(url, function (error, response, body) {
+        if (!error && response.statusCode == 200) {
+            log.info('body:',body);
+            cb(undefined,JSON.parse(body));
+        }else{
+            cb({error:error,errno:response.statusCode}); 
+        }
+    });
+}
+function updateToken(userid,token,cb){
+    db.query('update t_pushup_user set token=? where userid=?',[token,userid],function(err,rows){
+        if(err){
+            if(cb)
+                cb({err:err});
+        }else{
+            if(cb)
+                cb(undefined);
+        }
+    });
+}
+
+function addUser(username,openid,logintype,registerFrom,cb){
+    //新增用户
+    db.query('insert into t_pushup_user(openid,logintype,username,registerFrom,registerTime) values (?,?,?,?,now())', [openid,logintype,username,registerFrom], function(err, rows){
+        if(err){
+            cb({'error':err});
+        }else{
+            var userid = rows.insertId;
+            cb(undefined,{userid:userid});
+        }
+    });
+}
+
+function onBindQQ(obj){
+    var emitter = this;
+    var userid = obj['userid'];
+    var openid = obj['openid'];
+    var logintype = obj['logintype'];
+    var accessToken = obj['accessToken'];
+
+    if(!userid||!openid||openid.length===0||!logintype||!accessToken){
+        emit.call(emitter,'bindQQ', 'error args');
+    }else{
+        db.query('update t_pushup_user set openid=?,logintype=? where userid=?', [openid,logintype,userid], function(err, rows){
+            if(err){
+                emit.call(emitter,'bindQQ', {'error':err});
+            }else{
+                //不修改用户名
+                log.info('bindQQ success');
+                emit.call(emitter,'bindQQ', {'msg':'ok'});
+            }
         });
     }
 }
@@ -249,6 +405,24 @@ function queryUserValue(userid,callback){
     });
 }
 
+function queryUserAvgValue(userid,callback){
+    sql = 'select avgValue from t_pushup_user where userid=?'
+    db.query(sql, [userid], function(err, rows){
+        if(err){
+            callback({'errno':-1,'error':err.msg});
+        }else{
+            if(rows.length==1){
+                avgValue = rows[0]['avgValue'];
+                if(avgValue==0)
+                    myvalue=10
+                callback(undefined,avgValue);
+            }else{
+                callback({'errno':-1,'error':'user is not exist'});
+            }
+        }
+    });
+}
+
 function getOpponentByValue(userid,minValue,maxValue,callback){
     opponentSql = 'select * from t_pushup_user where value>? and value<=? and userid!=? order by rand() limit 1';
     db.query(opponentSql, [minValue,maxValue,userid], function(err, rows){
@@ -262,7 +436,6 @@ function getOpponentByValue(userid,minValue,maxValue,callback){
 }
 
 function sendOpponentRecord(emitter,opponentId,opponentName,callback){
-
     recordSql = 'select * from t_pushup_record where userid=? and record!="[]" order by sporttime desc limit 10'
     db.query(recordSql, [opponentId], function(err, rows){
         if(err){
@@ -298,6 +471,42 @@ function sendOpponentRecord(emitter,opponentId,opponentName,callback){
     });
 }
 
+function sendOpponentRecord1(emitter,opponentId,opponentName,callback){
+    recordSql = 'select * from t_pushup_record where userid=? and record!="[]" order by sporttime desc limit 10'
+    db.query(recordSql, [opponentId], function(err, rows){
+        if(err){
+            emit.call(emitter,'searchOpponent', {'error':err});
+            log.info('not equal opponent error:',err);
+        }else{
+            size = rows.length;
+            
+            //随机一场
+            index = Math.floor(Math.random()*size);
+            
+            log.info('not equal opponent data size:',size,',index:',index);
+            recordData = rows[index];
+            records='';
+            try{
+                records=JSON.parse(recordData['record']);
+            }catch(e){
+                log.info('sendOpponentRecord1 error:',e, opponentId,index);
+                emit.call(emitter,'searchOpponent', {'error':e});
+                return;
+            }
+            responseData = {
+                id:recordData['id'],
+                userid:opponentId,
+                username:opponentName,
+                records:records,
+                sporttime:recordData['sporttime'],
+            };
+            log.info('not equal opponent responseData,',responseData);
+            emit.call(emitter,'searchOpponent', responseData);
+            //reduceHp(userid,1);
+        }
+    });
+}
+
 function onSearchOpponent(data){
     var emitter = this;
     var obj = checkSearchOpponent(data);
@@ -308,7 +517,122 @@ function onSearchOpponent(data){
     var userid = obj.userid;
     var token = obj.token;
     var versionCode = obj.versionCode;
-    if(verifyToken(userid,token)){
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
+        //token有效
+        canReduceHp(userid,1,versionCode,function(err,canReduce){
+            if(err){
+                emit.call(emitter,'searchOpponent', {'error':err});
+                return; 
+            }
+            if(canReduce==false){
+                emit.call(emitter,'searchOpponent', {'errno':100,'error':'体力值不够'});
+                return;
+            }
+            //查找自己的平均值
+            queryUserAvgValue(userid,function(err,avgValue){
+                if(err){
+                    emit.call(emitter,'searchOpponent', {'error':err});
+                    return;
+                }
+                minValue = avgValue-5;
+                maxValue = avgValue+8;
+
+                //查找匹配的记录
+                getRecordByAvgValue(userid,minValue,maxValue,function(err,record){
+                    if(err){
+                        emit.call(emitter,'searchOpponent', err);
+                        log.info(err);
+                        return;
+                    }
+                    log.info('getRecordByAvgValue',JSON.stringify(record));
+                    emit.call(emitter,'searchOpponent',record);
+                    reduceHp(userid,1);
+                });
+            });
+        });
+    });
+}
+
+function getRecordByAvgValue(userid,minValue,maxValue,cb){
+    log.info('getRecordByAvgValue userid:'+userid+' ['+minValue+','+maxValue+']');
+    var sql = 'select * from t_pushup_record where userid!=? and size>=? and size<=? order by rand() limit 1';
+    db.query(sql,[userid,minValue,maxValue],function(err,rows){
+        if(err){
+            cb({'error':err}); 
+            return;
+        }    
+        if(rows.length==0){
+            db.query(sql,[userid,0,minValue],function(err,rows){
+                if(err){
+                    cb({'error':err}); 
+                    return;
+                }    
+                if(rows.length==0){
+                    db.query(sql,[userid,maxValue,100],function(err,rows){
+                        if(err){
+                            cb({'error':err}); 
+                            return;
+                        }    
+                        if(rows.length==0){
+                            cb({'error':'no match record'}); 
+                            log.info('getRecordByAvgValue no match record, minValue:'+minValue+', maxValue:'+maxValue);
+                        }else{
+                            assembleRecord(rows[0],cb);
+                        }
+                    });
+                }else{
+                    assembleRecord(rows[0],cb);
+                }
+            });
+        }else{
+            assembleRecord(rows[0],cb);
+        }    
+    });
+}
+
+function assembleRecord(record,cb){
+    var userid = record['userid'];
+    getUserInfo(db,userid,function(err,rows){
+        if(err){
+            emit.call(emitter,'searchOpponent', {error:err});
+            log.info('searchOpponent assembleRecord error:',err);
+            return;
+        }
+        if(rows.length===0){
+            emit.call(emitter,'searchOpponent', {error:'user not exist'});
+            log.info('searchOpponent assembleRecord error:user not exist');
+            return;
+        }
+        var info = rows[0];
+        var username = info['username'];
+        record['username']=username;
+        //字段问题
+        var records=JSON.parse(record['record']);
+        record['records']=records;
+        delete record['record'];
+        cb(undefined,record);
+    });
+}
+
+function onSearchOpponent1(data){
+    var emitter = this;
+    var obj = checkSearchOpponent(data);
+    if(obj['error']){
+        emit.call(emitter,'searchOpponent', obj);
+        return;
+    }
+    var userid = obj.userid;
+    var token = obj.token;
+    var versionCode = obj.versionCode;
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
         //token有效
         canReduceHp(userid,1,versionCode,function(err,canReduce){
             log.info('canReduce callback');
@@ -373,7 +697,7 @@ function onSearchOpponent(data){
                                 log.info(opponentData);
                                 var opponentId = opponentData['userid'];
                                 var opponentName = opponentData['username'];
-                                sendOpponentRecord(emitter,opponentId,opponentName);
+                                sendOpponentRecord1(emitter,opponentId,opponentName);
                                 reduceHp(userid,1);
                             }
                         });
@@ -381,17 +705,13 @@ function onSearchOpponent(data){
                         opponentData = rows[0];
                         var opponentId = opponentData['userid'];
                         var opponentName = opponentData['username'];
-                        sendOpponentRecord(emitter,opponentId,opponentName);
+                        sendOpponentRecord1(emitter,opponentId,opponentName);
                         reduceHp(userid,1);
                     }
                 });
             });
         });
-    }else{
-        //需要登录
-        log.info('verifyToken expire');
-        emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-    }
+    });
 }
 
 function canReduceHp(userid,hpsize,versionCode,callback){
@@ -555,11 +875,13 @@ function onUploadRecord(data){
     var records = obj['records'];
     var mRecordSize = records.length;
 
-    if(verifyToken(userid,token)){
-        //token有效
-        //*
-        sql = 'insert into t_pushup_record (userid,record,costtime,sporttime)values(?,?,?,?)'
-        db.query(sql, [userid,JSON.stringify(records),20,new Date()], function(err, rows){
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
+        sql = 'insert into t_pushup_record (userid,record,costtime,size,sporttime)values(?,?,?,?,?)'
+        db.query(sql, [userid,JSON.stringify(records),30,mRecordSize,new Date()], function(err, rows){
             if(err){
                 emit.call(emitter,'uploadRecord', {'error':err});
                 log.info(err);
@@ -606,11 +928,10 @@ function onUploadRecord(data){
                                     if(oldValue!=0){
                                         currentValue = (oldValue+currentValue)/2;
                                     }
-                                    if(recordSize>bestrecord)
 
-                                    winSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,win=win+1,maxwin=maxwin+1,lastfighttime=now() where userid=?';
-                                    drawSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,draw=draw+1,maxwin=0,lastfighttime=now() where userid=?';
-                                    lostSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,lost=lost+1,maxwin=0,lastfighttime=now() where userid=?';
+                                    var winSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,win=win+1,maxwin=maxwin+1,lastfighttime=now(),avgValue=total/(win+draw+lost) where userid=?';
+                                    var drawSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,draw=draw+1,maxwin=0,lastfighttime=now(),avgValue=total/(win+draw+lost) where userid=?';
+                                    var lostSql = 'update t_pushup_user set value=?,total=total+?,todayamount=todayamount+?,lost=lost+1,maxwin=0,lastfighttime=now(),avgValue=total/(win+draw+lost) where userid=?';
                                     //3:胜,2:平,1:负
                                     var pkResult=0;
                                     if(mRecordSize>oRecordSize){
@@ -623,90 +944,88 @@ function onUploadRecord(data){
                                         sql = drawSql;
                                         pkResult=2;
                                     }
-
                                     db.query(sql,[currentValue,mRecordSize,mRecordSize,userid],function(err, rows){
                                         if(err){
                                             emit.call(emitter,'uploadRecord', {'error':err});
-                                            log.info('uploadRecord',err);
+                                            log.info('uploadRecord update t_pushup_user error:',err);
                                             return;
-                                        }else{
-                                            log.info('uploadRecord udpate user');
-                                            sql = 'select * from t_pushup_user where userid=?';
-                                            db.query(sql,[userid],function(err, rows){
-                                                if(err){
-                                                    log.info(err);
-                                                    emit.call(emitter,'uploadRecord', {'error':err});
-                                                }else{
-                                                    var responseData = rows[0];
-                                                    delete responseData.passwd;
-                                                    var username = responseData.username;
-                                                    var userid = responseData.userid;
-                                                    var maxwin = responseData.maxwin;
-
-                                                    if(recordSize>bestrecord)
-                                                        updatePersonalNewRecord(userid,username,recordSize,bestrecord)
-
-                                                    //判断是否发放每日任务奖励
-                                                    log.info('todayamount:',responseData['todayamount']);
-                                                    log.info('todaytask:',responseData['todaytask']);
-                                                    if(responseData['todayamount']>=responseData['todaytask']){
-                                                        handoutEveryDayBonus(emitter,userid,username,1);
-                                                    }
-                                                    log.info('pkResult:',pkResult);
-                                                    
-                                                    if(pkResult==3){
-                                                        handoutBonus(emitter,userid,2);
-                                                    }
-
-                                                    getUserInfo(db,opponentId,function(err,rows){
-                                                        if(err){
-                                                            log.info('getUserInfo',err);
-                                                            emit.call(emitter,'uploadRecord', {'error':err});
-                                                        }else{
-                                                            var opponentData = rows[0];
-                                                            var opponentName = opponentData['username'];
-                                                            var msg = '';
-                                                            var type = 0;
-                                                            if(pkResult==3){
-                                                                msg = getWinBroadcastMsg(maxwin,username,opponentName,mRecordSize,oRecordSize);
-                                                                type=4;
-                                                            }else if(maxwin>=3){
-                                                                msg = username+oldMaxwin+'连杀后,'+'被'+opponentName+oRecordSize+':'+mRecordSize+'终结'; 
-                                                                type=6
-                                                            }else{
-                                                                return;
-                                                            }
-                                                            var now = new Date();
-                                                            var worldMsg = {
-                                                                msg:msg,
-                                                                userid:userid,
-                                                                type:type,
-                                                                isshow:1,
-                                                                showtimes:-1,
-                                                                addtime:now,
-                                                                stime:now,
-                                                                etime:util.dayOfEnd(now),
-                                                            };
-                                                            sendWorldMessage(worldMsg);
-                                                        }
-                                                    });
-
-                                                    getEncourageMsg(db,mRecordSize,oRecordSize,function(err,rows){
-                                                        if(err){
-                                                            log.info('getEncourageMsg',err);
-                                                            emit.call(emitter,'uploadRecord', {'error':err});
-                                                        }else{
-                                                            var msg = '';
-                                                            if(rows.length>0)
-                                                                msg = rows[0].msg
-                                                            responseData.encourageMsg = msg;
-                                                            emit.call(emitter,'uploadRecord', responseData);
-                                                            log.info('uploadRecord handoutBonus');
-                                                        }
-                                                    });
-                                                }
-                                            });
                                         }
+                                        log.info('uploadRecord udpate user',rows.affectedRows);
+                                        sql = 'select * from t_pushup_user where userid=?';
+                                        db.query(sql,[userid],function(err, rows){
+                                            if(err){
+                                                log.info(err);
+                                                emit.call(emitter,'uploadRecord', {'error':err});
+                                            }else{
+                                                var responseData = rows[0];
+                                                delete responseData.passwd;
+                                                var username = responseData.username;
+                                                var userid = responseData.userid;
+                                                var maxwin = responseData.maxwin;
+
+                                                if(recordSize>bestrecord)
+                                                    updatePersonalNewRecord(userid,username,recordSize,bestrecord)
+
+                                                //判断是否发放每日任务奖励
+                                                log.info('todayamount:',responseData['todayamount']);
+                                                log.info('todaytask:',responseData['todaytask']);
+                                                if(responseData['todayamount']>=responseData['todaytask']){
+                                                    handoutEveryDayBonus(emitter,userid,username,1);
+                                                }
+                                                log.info('pkResult:',pkResult);
+                                                
+                                                if(pkResult==3){
+                                                    handoutBonus(emitter,userid,2);
+                                                }
+
+                                                getUserInfo(db,opponentId,function(err,rows){
+                                                    if(err){
+                                                        log.info('getUserInfo',err);
+                                                        emit.call(emitter,'uploadRecord', {'error':err});
+                                                    }else{
+                                                        var opponentData = rows[0];
+                                                        var opponentName = opponentData['username'];
+                                                        var msg = '';
+                                                        var type = 0;
+                                                        if(pkResult==3){
+                                                            msg = getWinBroadcastMsg(maxwin,username,opponentName,mRecordSize,oRecordSize);
+                                                            type=4;
+                                                        }else if(maxwin>=3){
+                                                            msg = username+oldMaxwin+'连杀后,'+'被'+opponentName+oRecordSize+':'+mRecordSize+'终结'; 
+                                                            type=6
+                                                        }else{
+                                                            return;
+                                                        }
+                                                        var now = new Date();
+                                                        var worldMsg = {
+                                                            msg:msg,
+                                                            userid:userid,
+                                                            type:type,
+                                                            isshow:1,
+                                                            showtimes:-1,
+                                                            addtime:now,
+                                                            stime:now,
+                                                            etime:util.dayOfEnd(now),
+                                                        };
+                                                        sendWorldMessage(worldMsg);
+                                                    }
+                                                });
+
+                                                getEncourageMsg(db,mRecordSize,oRecordSize,function(err,rows){
+                                                    if(err){
+                                                        log.info('getEncourageMsg',err);
+                                                        emit.call(emitter,'uploadRecord', {'error':err});
+                                                    }else{
+                                                        var msg = '';
+                                                        if(rows.length>0)
+                                                            msg = rows[0].msg
+                                                        responseData.encourageMsg = msg;
+                                                        emit.call(emitter,'uploadRecord', responseData);
+                                                        log.info('uploadRecord handoutBonus');
+                                                    }
+                                                });
+                                            }
+                                        });
                                     });
                                 }
                             }
@@ -715,11 +1034,8 @@ function onUploadRecord(data){
                 });
             }
         });
-        //*/
-    }else{
-        log.info('verifyToken expire');
-        emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-    }
+    });
+    
 }
 
 
@@ -735,8 +1051,11 @@ function onBonus(data){
     }
     var userid = obj['userid'];
     var token = obj['token'];
-
-    if(verifyToken(userid,token)){
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
         sql = 'select r.id,b.id as bonusid,b.name as bonusname,b.reason,g.name as goodname,b.num from t_pushup_bonus_record as r inner join t_pushup_bonus as b on (r.bonusid=b.id) inner join t_pushup_goods as g on(b.goodid=g.id) where r.userid=? and r.status=0' 
         db.query(sql,[userid],function(err, rows){
             if(err){
@@ -764,9 +1083,7 @@ function onBonus(data){
                 emit.call(emitter,'bonus', {'datas':datas});
             }
         });
-    }else{
-    
-    }
+    });
 }
 
 function checkReceiveBonus(obj){
@@ -792,9 +1109,11 @@ function onReceiveBonus(data){
     var userid = obj['userid'];
     var token = obj['token'];
     var bonusRecordId = obj['bonusRecordId'];
-
-    if(verifyToken(userid,token)){
-        log.info('verifyToken ok', bonusRecordId);
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
         sql = 'update t_pushup_bonus_record set status=1,receivetime=now() where id=?'
         db.query(sql,[bonusRecordId],function(err, rows){
             if(err){
@@ -824,13 +1143,7 @@ function onReceiveBonus(data){
                 
             }
         });
-        
-
-    }else{
-        log.info('verifyToken expire');
-        emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-    }
-    
+    });   
 }
 
 function checkBaseRequestInfo(obj){
@@ -854,10 +1167,12 @@ function onRank(data){
     }
     var userid = obj['userid'];
     var token = obj['token'];
-
-    if(verifyToken(userid,token)){
-        sql = 'select userid,username,total,win,draw,lost,value from t_pushup_user where total>0 order by total desc,win desc,lost,draw,userid';
-        log.info('verifyToken success');
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
+        sql = 'select userid,username,total,win,draw,lost,value from t_pushup_user where total>0 order by total desc,win desc,lost,draw,userid limit 100';
         db.query(sql, [], function(err, rows){
             if(err){
                 emit.call(emitter,'rank', {'error':err});
@@ -867,10 +1182,7 @@ function onRank(data){
                 log.info('rank:',rows);
             }
         });
-    }else{
-        log.info('verifyToken expire');
-        emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-    }
+    });
 }
 
 function checkFightRecords(obj){
@@ -888,15 +1200,17 @@ function onFightRecords(data){
     var obj = checkFightRecords(data);
 
     if(obj['error']){
-        log.info('fightRecords',err);
         emit.call(emitter,'fightRecords', obj);
         return;
     }
     var userid = obj['userid'];
     var token = obj['token'];
-
-    if(verifyToken(userid,token)){
-        sql = 'select f.*,u.username from t_pushup_fight as f inner join t_pushup_user as u on (f.opponentid=u.userid) where f.userid=? order by fighttime desc';
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
+        sql = 'select f.*,u.username from t_pushup_fight as f inner join t_pushup_user as u on (f.opponentid=u.userid) where f.userid=? order by fighttime desc limit 100';
         db.query(sql, [userid], function(err, rows){
             if(err){
                 emit.call(emitter,'fightRecords', {'error':err});
@@ -906,10 +1220,7 @@ function onFightRecords(data){
                 emit.call(emitter,'fightRecords', {'datas':rows});
             }
         });
-    }else{
-        log.info('verifyToken expire');
-        emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-    }
+    });
 }
 
 function checkBeFightRecords(obj){
@@ -933,9 +1244,12 @@ function onBeFightRecords(data){
     }
     var userid = obj['userid'];
     var token = obj['token'];
-
-    if(verifyToken(userid,token)){
-        sql = 'select f.*,u.username from t_pushup_fight as f inner join t_pushup_user as u on (f.userid=u.userid) where f.opponentid=? order by fighttime desc';
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
+        sql = 'select f.*,u.username from t_pushup_fight as f inner join t_pushup_user as u on (f.userid=u.userid) where f.opponentid=? order by fighttime desc limit 100';
         db.query(sql, [userid], function(err, rows){
             if(err){
                 emit.call(emitter,'beFightRecords', {'error':err});
@@ -945,10 +1259,7 @@ function onBeFightRecords(data){
                 emit.call(emitter,'beFightRecords', {'datas':rows});
             }
         });
-    }else{
-        log.info('verifyToken expire');
-        emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-    }
+    });
 }
 
 function checkRecords(obj){
@@ -1011,9 +1322,11 @@ function onWorldMessageHistory(data){
     }
     var userid = data['userid'];
     var token = data['token'];
-
-    if(verifyToken(userid,token)){
-        log.info('verifyToken success');
+    verifyToken(userid,token,function(isOk){
+        if(isOk===0){
+            emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
+            return;
+        }
         async.parallel(
             [
                 //公告
@@ -1045,12 +1358,8 @@ function onWorldMessageHistory(data){
                 }
             } 
         );
-    }else{
-        log.info('verifyToken expire');
-        emit.call(emitter,'verifyToken', {'error':'token is expire', 'errno':401});
-    }
+    });
 }
-
 function onWorldMessage(data){
 
 }
@@ -1082,7 +1391,7 @@ function insertTable(dbInstance,tableName,datas,cb){
 }
 
 function getUserInfo(dbInstance,userid,cb){
-    var sql = 'select username from t_pushup_user where userid=?';
+    var sql = 'select * from t_pushup_user where userid=?';
     dbInstance.query(sql,[userid],cb); 
 }
 
@@ -1213,3 +1522,7 @@ function onBaseInfo(data){
 }
 
 module.exports = protocols;
+
+
+
+
