@@ -5,6 +5,7 @@ var db = require('./DBPool.js');
 var util = require('./util.js');
 var async = require('async');
 var mail = require('./mail.js');
+var schedule = require('node-schedule');
 
 var query=function(sql,args,cb){
     var conn = mysql.createConnection(dbConfig);
@@ -23,21 +24,13 @@ var resetRemainHp=function(){
 var resetServer=function(){
     query('update t_pushup_user set todayamount=0,remainhp=5,maxwin=0',[],function(err, rows){
         if(err){
-            console.log('resetServer err',err);
+            log.info('resetServer err',err);
         }else{
-            console.log('reset todayamount remainhp');
-            isReset=1;
+            log.info('reset todayamount remainhp ok', new Date());
         }
     });
 };
 
-var isStatistics=0;
-var isReset=0;
-
-function ticktack(){
-    doOnceOneDay(new Date('2016-08-01 23:55:00'),isStatistics,statisticsData);
-    doOnceOneDay(new Date('2016-08-01 23:59:59'),isReset,resetServer);
-}
 
 var channels = {
     1:'蒲公英',
@@ -52,7 +45,6 @@ var channels = {
 
 function statisticsData(){
     
-
     async.parallel(
         [
             //今日新增
@@ -63,9 +55,9 @@ function statisticsData(){
                     var msg = '';
                     for(var i in rows){
                         var row = rows[i];
-                        var chennel = channels[row['registerFrom']];
-                        if(!chennel)
-                            chennel=row['registerFrom'];
+                        var channel = channels[row['registerFrom']];
+                        if(!channel)
+                            channel=row['registerFrom'];
                         msg +=  '\t'+channel+':'+row['newNum']+'\n';
                     }
                     if(msg==='')
@@ -91,29 +83,25 @@ function statisticsData(){
             }else{
                 var rows = results[0].concat(results[1]);
                 var mailMsg = results.join('');
+                log.info('statisticsData ok',new Date());
                 mail.send('天天俯卧撑数据统计',mailMsg);
             }
         } 
     );
 }
 
-function doOnceOneDay(time,isDone,cb){
-    var now=new Date();
-    var hour = now.getHours();
-    var minute = now.getMinutes();//minute
-    var second = now.getSeconds();//second
-    var targetHour = time.getHours();
-    var targetMinute = time.getMinutes();
-    var targetSecond = time.getSeconds();
-    console.log(targetHour,targetMinute,targetSecond,isDone);
-    if(hour===targetHour && minute>=targetMinute && minute<targetMinute+5 && isDone===0){
-        isStatistics=1;
-        cb();
-    }else if(hour>=targetHour && minute>=targetMinute+5 && isDone===1){
-        isStatistics=0;
-    }
+function ticktack(){
+    var rule = new schedule.RecurrenceRule();
+    rule.hour=23;
+    rule.minute=55;
+    rule.second=0;
+    schedule.scheduleJob(rule,statisticsData);
+
+    rule = new schedule.RecurrenceRule();
+    rule.hour=0;
+    rule.minute=0;
+    rule.second=0;
+    schedule.scheduleJob(rule,resetServer);
+
 }
-
-
-
-setInterval(ticktack,500);
+ticktack();
